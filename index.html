@@ -1,1 +1,383 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pong 2 Jogadores (Gamepad)</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --fg: #e8f0ff;
+      --muted: #6b7a90;
+      --accent: #31d0aa;
+      --danger: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      display: grid;
+      place-items: center;
+    }
+    .wrap {
+      width: min(100vw, 1100px);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      justify-items: center;
+    }
+    h1 { font-size: clamp(16px, 2.2vw, 22px); margin: 0; color: var(--fg); opacity: .9; }
+    .status { font-size: 14px; color: var(--muted); text-align: center; }
+    .status strong { color: var(--fg); }
 
+    canvas { 
+      background: radial-gradient(1200px 800px at 50% 50%, #0f1520 0%, #0b0f14 60%, #070a0d 100%);
+      width: min(100%, 1000px);
+      aspect-ratio: 16/9;
+      border-radius: 16px;
+      display: block;
+      box-shadow: 0 10px 40px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.05);
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,.6);
+      padding: 16px;
+      z-index: 10;
+    }
+    .overlay.show { display: flex; }
+    .panel {
+      width: min(92vw, 520px);
+      background: #0f1520;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: 0 15px 50px rgba(0,0,0,.55), inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    .panel h2 { margin: 0 0 6px; font-size: 24px; }
+    .panel p { margin: 6px 0; color: #cbd5e1; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .kbd {
+      border: 1px solid rgba(255,255,255,.12);
+      padding: 2px 8px; border-radius: 8px; font-size: 12px; color: #cbd5e1;
+      background: rgba(255,255,255,.03);
+    }
+
+    .btn {
+      appearance: none; border: 0; cursor: pointer;
+      padding: 12px 16px; border-radius: 14px; font-weight: 600; font-size: 15px;
+      background: var(--accent); color: #001b14;
+      box-shadow: 0 6px 20px rgba(49,208,170,.35);
+      transition: transform .08s ease;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+
+    .btn-ghost { background: transparent; color: var(--fg); border: 1px solid rgba(255,255,255,.12); box-shadow: none; }
+
+    .hud { display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap; }
+    .tag { font-size: 12px; color: var(--muted); border: 1px solid rgba(255,255,255,.12); border-radius: 999px; padding: 4px 10px; }
+
+    @media (max-width: 600px) {
+      .status { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Pong – 2 Jogadores (Gamepad)</h1>
+    <div class="status" id="status">
+      Conecte <strong>2 controles</strong> e pressione qualquer botão neles para iniciar.
+    </div>
+    <div class="hud" id="hud"></div>
+    <canvas id="game" width="1000" height="562"></canvas>
+  </div>
+
+  <div class="overlay" id="gameover">
+    <div class="panel">
+      <h2 id="winnerTitle">Vitória!</h2>
+      <p id="finalScore">Placar final: 0 – 0</p>
+      <div class="row" style="margin-top:12px; gap:12px;">
+        <button class="btn" id="btnRestart">Reiniciar partida</button>
+        <button class="btn btn-ghost" id="btnContinue">Fechar</button>
+      </div>
+      <p style="margin-top:12px; font-size:12px; color:#94a3b8;">Dica: use o direcional (D‑Pad) ou o <em>stick</em> esquerdo para mover as barras.</p>
+    </div>
+  </div>
+
+  <script>
+    // === Configurações do jogo ===
+    const MAX_SCORE = 5;               // primeiro a 5 vence
+    const PADDLE_SPEED = 520;          // px/s
+    const PADDLE_WIDTH = 16;
+    const PADDLE_HEIGHT = 100;
+    const BALL_SIZE = 14;
+    const BALL_BASE_SPEED = 360;       // velocidade inicial px/s
+    const BALL_ACCEL_PER_SEC = 55;     // aceleração contínua px/s/s (aumenta com o tempo)
+    const BALL_MAX_SPEED = 980;        // limite superior
+    const BOUNCE_SPIN = 380;           // quanto a colisão ajusta o dy
+    const DEADZONE = 0.18;             // deadzone do analógico
+
+    // === Estado do jogo ===
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const hudEl = document.getElementById('hud');
+
+    const overlay = document.getElementById('gameover');
+    const btnRestart = document.getElementById('btnRestart');
+    const btnContinue = document.getElementById('btnContinue');
+    const winnerTitle = document.getElementById('winnerTitle');
+    const finalScore = document.getElementById('finalScore');
+
+    let paddles = {
+      left: { x: 30, y: canvas.height/2 - PADDLE_HEIGHT/2, w: PADDLE_WIDTH, h: PADDLE_HEIGHT },
+      right:{ x: canvas.width-30-PADDLE_WIDTH, y: canvas.height/2 - PADDLE_HEIGHT/2, w: PADDLE_WIDTH, h: PADDLE_HEIGHT }
+    };
+
+    let ball = { x: canvas.width/2, y: canvas.height/2, vx: 0, vy: 0, speed: BALL_BASE_SPEED };
+
+    let score = { left: 0, right: 0 };
+    let lastTime = 0;
+    let running = false; // roda somente quando 2 controles ativos
+    let winner = null;
+
+    // Gamepads
+    let playerPads = []; // [indexP1, indexP2]
+
+    function resetBall(direction = Math.random()<0.5 ? -1 : 1) {
+      ball.x = canvas.width / 2;
+      ball.y = canvas.height / 2;
+      ball.speed = BALL_BASE_SPEED;
+      // Direção inicial leve aleatória
+      const angle = (Math.random() * 0.6 - 0.3); // -0.3 a 0.3 rad ~ +/-17º
+      ball.vx = Math.cos(angle) * ball.speed * direction;
+      ball.vy = Math.sin(angle) * ball.speed;
+    }
+
+    function resetMatch() {
+      score.left = 0; score.right = 0;
+      paddles.left.y = canvas.height/2 - PADDLE_HEIGHT/2;
+      paddles.right.y = canvas.height/2 - PADDLE_HEIGHT/2;
+      winner = null;
+      overlay.classList.remove('show');
+      resetBall();
+      running = playerPads.length >= 2;
+    }
+
+    function endMatch() {
+      running = false;
+      winner = score.left === MAX_SCORE ? 'Jogador 1' : 'Jogador 2';
+      winnerTitle.textContent = `${winner} venceu!`;
+      finalScore.textContent = `Placar final: ${score.left} – ${score.right}`;
+      overlay.classList.add('show');
+    }
+
+    // === Desenho ===
+    function drawNet() {
+      const segH = 18, gap = 16;
+      ctx.fillStyle = 'rgba(255,255,255,.9)';
+      for (let y = 0; y < canvas.height; y += segH + gap) {
+        ctx.fillRect(canvas.width/2 - 2, y, 4, segH);
+      }
+    }
+    function draw() {
+      // fundo
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // placar
+      ctx.font = '48px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillStyle = 'rgba(255,255,255,.92)';
+      ctx.fillText(score.left, canvas.width * 0.25, 16);
+      ctx.fillText(score.right, canvas.width * 0.75, 16);
+
+      drawNet();
+
+      // paddles
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(paddles.left.x, paddles.left.y, paddles.left.w, paddles.left.h);
+      ctx.fillRect(paddles.right.x, paddles.right.y, paddles.right.w, paddles.right.h);
+
+      // bola
+      ctx.fillRect(ball.x - BALL_SIZE/2, ball.y - BALL_SIZE/2, BALL_SIZE, BALL_SIZE);
+
+      // dicas de conexão
+      if (!running) {
+        ctx.font = '18px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(255,255,255,.6)';
+        const msg = playerPads.length < 2 ? 'Conecte 2 controles e pressione um botão em cada um.' : 'Pronto! Pressione qualquer botão para começar.';
+        ctx.fillText(msg, canvas.width/2, canvas.height - 28);
+      }
+    }
+
+    // === Lógica ===
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+    function update(dt) {
+      // Aumenta a velocidade da bola com o tempo (de forma contínua)
+      ball.speed = clamp(ball.speed + BALL_ACCEL_PER_SEC * dt, BALL_BASE_SPEED, BALL_MAX_SPEED);
+      // Ajusta vetores mantendo direção
+      const dir = Math.atan2(ball.vy, ball.vx);
+      ball.vx = Math.cos(dir) * ball.speed;
+      ball.vy = Math.sin(dir) * ball.speed;
+
+      // Ler gamepads
+      const gps = navigator.getGamepads ? navigator.getGamepads() : [];
+      const p1 = playerPads[0] != null ? gps[playerPads[0]] : null;
+      const p2 = playerPads[1] != null ? gps[playerPads[1]] : null;
+
+      const p1Move = getPadY(p1);
+      const p2Move = getPadY(p2);
+
+      paddles.left.y += p1Move * PADDLE_SPEED * dt;
+      paddles.right.y += p2Move * PADDLE_SPEED * dt;
+
+      paddles.left.y = clamp(paddles.left.y, 0, canvas.height - paddles.left.h);
+      paddles.right.y = clamp(paddles.right.y, 0, canvas.height - paddles.right.h);
+
+      // mover bola
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+
+      // colisão com bordas horizontais
+      if (ball.y - BALL_SIZE/2 <= 0 && ball.vy < 0) { ball.y = BALL_SIZE/2; ball.vy *= -1; }
+      if (ball.y + BALL_SIZE/2 >= canvas.height && ball.vy > 0) { ball.y = canvas.height - BALL_SIZE/2; ball.vy *= -1; }
+
+      // colisão com paddles
+      // Left paddle
+      if (ball.x - BALL_SIZE/2 <= paddles.left.x + paddles.left.w &&
+          ball.x > paddles.left.x &&
+          ball.y + BALL_SIZE/2 >= paddles.left.y &&
+          ball.y - BALL_SIZE/2 <= paddles.left.y + paddles.left.h &&
+          ball.vx < 0) {
+        const hitPos = (ball.y - (paddles.left.y + paddles.left.h/2)) / (paddles.left.h/2); // -1..1
+        const angle = hitPos * 0.45; // ~ +/- 25º
+        ball.vx = Math.abs(ball.vx); // reflete para a direita
+        // adiciona "spin" vertical
+        ball.vy = Math.sin(angle) * ball.speed + hitPos * (BOUNCE_SPIN * 0.12);
+        // reposiciona fora do paddle para evitar stuck
+        ball.x = paddles.left.x + paddles.left.w + BALL_SIZE/2 + 0.5;
+      }
+      // Right paddle
+      if (ball.x + BALL_SIZE/2 >= paddles.right.x &&
+          ball.x < paddles.right.x + paddles.right.w &&
+          ball.y + BALL_SIZE/2 >= paddles.right.y &&
+          ball.y - BALL_SIZE/2 <= paddles.right.y + paddles.right.h &&
+          ball.vx > 0) {
+        const hitPos = (ball.y - (paddles.right.y + paddles.right.h/2)) / (paddles.right.h/2);
+        const angle = hitPos * 0.45;
+        ball.vx = -Math.abs(ball.vx); // reflete para a esquerda
+        ball.vy = Math.sin(angle) * ball.speed + hitPos * (BOUNCE_SPIN * 0.12);
+        ball.x = paddles.right.x - BALL_SIZE/2 - 0.5;
+      }
+
+      // pontuação
+      if (ball.x < 0 - BALL_SIZE) {
+        score.right++;
+        if (score.right >= MAX_SCORE) { endMatch(); return; }
+        resetBall(1); // bola vai para o vencedor do ponto
+      }
+      if (ball.x > canvas.width + BALL_SIZE) {
+        score.left++;
+        if (score.left >= MAX_SCORE) { endMatch(); return; }
+        resetBall(-1);
+      }
+    }
+
+    function getPadY(gp) {
+      if (!gp) return 0;
+      // Preferir eixos do stick esquerdo (1) e direito (7) por compatibilidade
+      const a1 = gp.axes && gp.axes.length > 1 ? gp.axes[1] : 0;
+      const a7 = gp.axes && gp.axes.length > 7 ? gp.axes[7] : 0;
+      let y = Math.abs(a1) > Math.abs(a7) ? a1 : a7;
+      if (Math.abs(y) < DEADZONE) y = 0;
+
+      // D-Pad: 12 (up) e 13 (down)
+      const up = gp.buttons && gp.buttons[12] && gp.buttons[12].pressed;
+      const down = gp.buttons && gp.buttons[13] && gp.buttons[13].pressed;
+      if (up && !down) y = -1;
+      else if (down && !up) y = 1;
+
+      return y;
+    }
+
+    // === Loop principal ===
+    function loop(ts) {
+      const t = ts / 1000;
+      const dt = Math.min(0.033, t - (lastTime || t));
+      lastTime = t;
+
+      if (running) update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    // === Gamepad handling ===
+    function refreshPadList() {
+      const arr = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean);
+      const names = arr.map(g => g.id.split('(')[0].trim());
+
+      // Atribui os dois primeiros
+      playerPads = arr.slice(0,2).map(g => g.index);
+
+      // HUD
+      hudEl.innerHTML = '';
+      const need = playerPads.length;
+      const ok = need >= 2;
+      if (!ok) {
+        statusEl.innerHTML = 'Conecte <strong>2 controles</strong> e pressione qualquer botão neles para iniciar.';
+      } else {
+        statusEl.innerHTML = `Controles detectados: <strong>${names[0] || '—'}</strong> (P1) e <strong>${names[1] || '—'}</strong> (P2).`;
+      }
+
+      names.slice(0,2).forEach((n, i) => {
+        const tag = document.createElement('div');
+        tag.className = 'tag';
+        tag.textContent = `${i===0?'P1':'P2'} • ${n || 'Controle'}`;
+        hudEl.appendChild(tag);
+      });
+
+      running = playerPads.length >= 2 && !winner; // só roda se 2 controles
+    }
+
+    window.addEventListener('gamepadconnected', () => {
+      refreshPadList();
+      // Iniciar ao pressionar botão
+      running = playerPads.length >= 2 && !winner;
+    });
+
+    window.addEventListener('gamepaddisconnected', () => {
+      refreshPadList();
+      running = false;
+    });
+
+    // Clique/ações na overlay
+    btnRestart.addEventListener('click', resetMatch);
+    btnContinue.addEventListener('click', () => overlay.classList.remove('show'));
+
+    // Início
+    resetMatch();
+    refreshPadList();
+    requestAnimationFrame(loop);
+
+    // Atalhos de utilidade (não jogáveis no teclado, apenas helpers)
+    window.addEventListener('keydown', (e) => {
+      // Permitir reiniciar com Enter quando overlay estiver aberto
+      if (overlay.classList.contains('show') && (e.key === 'Enter' || e.key === ' ')) {
+        resetMatch();
+      }
+    });
+  </script>
+</body>
+</html>
